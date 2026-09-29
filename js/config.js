@@ -7,12 +7,12 @@
 // con datos de ejemplo guardados solo en el navegador.
 
 export const FIREBASE_CONFIG = {
-  apiKey: "PEGA_AQUI",
-  authDomain: "",
-  projectId: "",
-  storageBucket: "",
-  messagingSenderId: "",
-  appId: ""
+  apiKey: "AIzaSyDvG5EMDl-9YOO5tofmfH-g9yCVrr4lJAs",
+  authDomain: "cartera-diaria-fa689.firebaseapp.com",
+  projectId: "cartera-diaria-fa689",
+  storageBucket: "cartera-diaria-fa689.firebasestorage.app",
+  messagingSenderId: "279214989810",
+  appId: "1:279214989810:web:d7b867099c7f9bd4874b6b"
 };
 
 // Versión del SDK de Firebase que se carga desde gstatic.com
