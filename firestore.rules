@@ -1,0 +1,157 @@
+rules_version = '2';
+
+// Cartera Diaria · reglas de seguridad de Firestore
+// Cada empresa (tenant) solo ve sus propios datos.
+// Roles: admin (oficina), cobrador (solo su ruta) y cliente (solo sus préstamos).
+// El rol de cada usuario vive en /users/{uid}; no hace falta Cloud Functions (plan gratuito Spark).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signed() { return request.auth != null; }
+    function userPath(uid) { return /databases/$(database)/documents/users/$(uid); }
+    function hasMe() { return signed() && exists(userPath(request.auth.uid)); }
+    function me() { return get(userPath(request.auth.uid)).data; }
+    function inT(t) { return hasMe() && me().tenantId == t && me().activo == true; }
+    function isAdmin(t) { return inT(t) && me().rol == 'admin'; }
+    function isCob(t) { return inT(t) && me().rol == 'cobrador'; }
+    function isCli(t) { return inT(t) && me().rol == 'cliente'; }
+    function tenantPath(t) { return /databases/$(database)/documents/tenants/$(t); }
+    function prestamo(t, id) { return get(/databases/$(database)/documents/tenants/$(t)/prestamos/$(id)).data; }
+    function nuevo() { return request.resource.data; }
+    function soloCambia(campos) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(campos); }
+    function montoValido(m) { return m is number && m > 0 && m <= 1000000000; }
+
+    // ---------- Usuarios ----------
+    match /users/{uid} {
+      allow get: if signed() && (request.auth.uid == uid || isAdmin(resource.data.tenantId));
+      allow list: if hasMe() && isAdmin(resource.data.tenantId);
+      // 1) Quien crea su empresa se registra como admin en la misma escritura.
+      // 2) Un admin crea accesos de cobradores y clientes de su empresa (solo cuentas nuevas).
+      allow create: if signed() && (
+        (request.auth.uid == uid
+          && nuevo().rol == 'admin' && nuevo().activo == true
+          && !exists(tenantPath(nuevo().tenantId))
+          && getAfter(tenantPath(nuevo().tenantId)).data.owner == uid)
+        || (uid != request.auth.uid
+          && isAdmin(nuevo().tenantId)
+          && nuevo().rol in ['cobrador', 'cliente', 'admin'])
+      );
+      allow update: if uid != request.auth.uid
+        && isAdmin(resource.data.tenantId)
+        && nuevo().tenantId == resource.data.tenantId;
+      allow delete: if false;
+    }
+
+    // Códigos cortos de empresa (los clientes los usan para entrar). Garantiza que no se repitan.
+    match /codigos/{codigo} {
+      allow get: if signed();
+      allow create: if signed()
+        && !exists(tenantPath(nuevo().tenantId))
+        && getAfter(tenantPath(nuevo().tenantId)).data.owner == request.auth.uid
+        && getAfter(tenantPath(nuevo().tenantId)).data.codigo == codigo;
+      allow update, delete: if false;
+    }
+
+    // ---------- Empresa ----------
+    match /tenants/{t} {
+      allow get: if inT(t);
+      allow create: if signed()
+        && nuevo().owner == request.auth.uid
+        && !exists(userPath(request.auth.uid))
+        && getAfter(userPath(request.auth.uid)).data.tenantId == t;
+      // El admin cambia su configuración, pero no el dueño, el código ni el plan de suscripción.
+      allow update: if isAdmin(t)
+        && nuevo().owner == resource.data.owner
+        && nuevo().codigo == resource.data.codigo
+        && nuevo().get('plan', null) == resource.data.get('plan', null);
+      allow delete: if false;
+
+      match /planes/{id} {
+        allow read: if inT(t);
+        allow write: if isAdmin(t);
+      }
+
+      match /cobradores/{id} {
+        allow read: if isAdmin(t) || isCob(t);
+        allow write: if isAdmin(t);
+      }
+
+      match /clientes/{id} {
+        allow read: if isAdmin(t)
+          || (isCob(t) && resource.data.cobradorId == me().cobradorId)
+          || (isCli(t) && me().clienteId == id);
+        allow write: if isAdmin(t);
+      }
+
+      match /prestamos/{id} {
+        allow read: if isAdmin(t)
+          || (isCob(t) && resource.data.cobradorId == me().cobradorId)
+          || (isCli(t) && resource.data.clienteId == me().clienteId);
+        allow create: if isAdmin(t) && montoValido(nuevo().monto) && nuevo().clienteId is string && nuevo().cobradorId is string;
+        allow update: if isAdmin(t);
+        allow delete: if false;
+      }
+
+      // Pagos: nunca se borran. Se anulan dejando rastro.
+      match /pagos/{id} {
+        allow read: if isAdmin(t)
+          || (isCob(t) && resource.data.rutaId == me().cobradorId)
+          || (isCli(t) && resource.data.clienteId == me().clienteId);
+        allow create: if inT(t)
+          && nuevo().creadoPor == request.auth.uid
+          && nuevo().anulado == false
+          && montoValido(nuevo().monto)
+          && nuevo().tipo in ['cuota', 'recargo', 'renovacion']
+          && nuevo().rutaId == prestamo(t, nuevo().prestamoId).cobradorId
+          && nuevo().clienteId == prestamo(t, nuevo().prestamoId).clienteId
+          && (isAdmin(t)
+              || (isCob(t) && nuevo().tipo != 'renovacion'
+                  && nuevo().cobradorId == me().cobradorId
+                  && nuevo().rutaId == me().cobradorId));
+        // El admin anula o cambia la ruta. El cobrador puede deshacer su propio pago en los primeros 15 minutos.
+        allow update: if (isAdmin(t) && soloCambia(['anulado', 'anuladoPor', 'anuladoEn', 'rutaId']))
+          || (isCob(t) && resource.data.creadoPor == request.auth.uid
+              && request.time < resource.data.ts + duration.value(15, 'm')
+              && soloCambia(['anulado', 'anuladoPor', 'anuladoEn'])
+              && nuevo().anulado == true);
+        allow delete: if false;
+      }
+
+      // Visitas sin pago ("no pagó")
+      match /visitas/{id} {
+        allow read: if isAdmin(t) || (isCob(t) && resource.data.rutaId == me().cobradorId);
+        allow create: if (isAdmin(t) || (isCob(t) && nuevo().rutaId == me().cobradorId))
+          && nuevo().creadoPor == request.auth.uid
+          && nuevo().rutaId == prestamo(t, nuevo().prestamoId).cobradorId;
+        allow update: if isAdmin(t) && soloCambia(['rutaId']);
+        allow delete: if isAdmin(t);
+      }
+
+      match /gastos/{id} {
+        allow read: if isAdmin(t) || (isCob(t) && resource.data.cobradorId == me().cobradorId);
+        allow create: if (isAdmin(t) || (isCob(t) && nuevo().cobradorId == me().cobradorId)) && montoValido(nuevo().monto);
+        allow update, delete: if isAdmin(t);
+      }
+
+      match /bases/{id} {
+        allow read: if isAdmin(t) || (isCob(t) && resource.data.cobradorId == me().cobradorId);
+        allow write: if isAdmin(t);
+      }
+
+      match /solicitudes/{id} {
+        allow read: if isAdmin(t) || (isCli(t) && resource.data.clienteId == me().clienteId);
+        allow create: if isCli(t) && nuevo().clienteId == me().clienteId && nuevo().estado == 'pendiente' && montoValido(nuevo().monto);
+        allow update: if isAdmin(t);
+        allow delete: if false;
+      }
+
+      // Bitácora: se escribe, no se edita ni se borra.
+      match /bitacora/{id} {
+        allow read: if isAdmin(t);
+        allow create: if inT(t) && nuevo().uid == request.auth.uid;
+        allow update, delete: if false;
+      }
+    }
+  }
+}
