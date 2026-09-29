@@ -1,6 +1,6 @@
 // Cartera Diaria · aplicación (oficina, cobrador y cliente)
-import { MODO_DEMO, backendDemo, backendFirebase, numeroRecibo, numeroPrestamo, correoCliente } from './backend.js';
-import { REGISTRO_ABIERTO } from './config.js';
+import { MODO_DEMO, backendDemo, backendFirebase, numeroRecibo, numeroPrestamo, correoCliente, estadoEmpresa, ms } from './backend.js';
+import { REGISTRO_ABIERTO, DIAS_PRUEBA, SOPORTE, PLANES_SUSCRIPCION } from './config.js';
 
 /* ===================== Utilidades ===================== */
 const $=s=>document.querySelector(s);
@@ -846,6 +846,100 @@ function simSol(){const f=$('#fSol');if(!f)return;const p=planDe(f.planId.value)
   const s=simular(p,P,hoy());$('#soSim').innerHTML=`<div class="sim"><div><span class="label">Cuota</span><b>${$$(s.cuota)}</b></div><div><span class="label">Cuotas</span><b>${s.n} ${FRECP[p.frecuencia]}</b></div><div><span class="label">Total</span><b>${$$(s.total)}</b></div></div>`}
 
 
+/* ===================== Plataforma (dueño de la app) ===================== */
+const PLAT={emps:[],uso:{},contactos:{},filtro:'todas',buscar:'',unsub:null,pedidos:{}};
+const fMs=v=>{const m=ms(v);return m?fcorta(iso(new Date(m)))+' '+new Date(m).getFullYear():'—'};
+function haceCuanto(v){const m=ms(v);if(!m)return 'Nunca';const h=(Date.now()-m)/36e5;if(h<1)return 'Hace minutos';if(h<24)return `Hace ${Math.floor(h)} h`;const d=Math.floor(h/24);return d===1?'Ayer':`Hace ${d} días`}
+function chipEmpresa(e){const x=estadoEmpresa(e,DIAS_PRUEBA);
+  return x.estado==='activa'?'<span class="chip c-ok">Activa</span>':x.estado==='suspendida'?'<span class="chip c-bad">Suspendida</span>':x.estado==='vencida'?'<span class="chip c-bad">Prueba vencida</span>':`<span class="chip ${x.dias<=7?'c-warn':'c-pen'}">Prueba · ${x.dias} ${x.dias===1?'día':'días'}</span>`}
+const limTxt=p=>p?`${p.maxCobradores||'∞'} cobr. · ${p.maxPrestamos||'∞'} prést.`:'—';
+const precioPlan=nombre=>(PLANES_SUSCRIPCION.find(p=>p.nombre===nombre)||{}).precio||0;
+function escucharPlataforma(){
+  if(PLAT.unsub)return;
+  PLAT.unsub=B.escucharEmpresas(list=>{PLAT.emps=list;
+    list.forEach(e=>{
+      if(!PLAT.pedidos[e.id]){PLAT.pedidos[e.id]=1;
+        B.usoEmpresa(e.id).then(u=>{PLAT.uso[e.id]=u;if(UI.role==='plataforma')render()}).catch(()=>{});
+        B.contactoEmpresa(e).then(c=>{PLAT.contactos[e.id]=c;if(UI.role==='plataforma')render()}).catch(()=>{});}
+    });
+    if(UI.role==='plataforma')render()});
+}
+function dejarPlataforma(){if(PLAT.unsub){PLAT.unsub();PLAT.unsub=null}}
+function vPlataforma(){
+  escucharPlataforma();
+  const filas=PLAT.emps.map(e=>({e,x:estadoEmpresa(e,DIAS_PRUEBA),c:PLAT.contactos[e.id]||e.contacto,u:PLAT.uso[e.id]}));
+  const n=k=>filas.filter(f=>f.x.estado===k).length;
+  const porVencer=filas.filter(f=>f.x.estado==='prueba'&&f.x.dias<=7).length;
+  const ingreso=sum(filas.filter(f=>f.x.estado==='activa'),f=>precioPlan(f.e.plan?.nombre));
+  const q=PLAT.buscar.toLowerCase();
+  const vis=filas.filter(f=>PLAT.filtro==='todas'||(PLAT.filtro==='bloqueadas'?!f.x.opera:PLAT.filtro==='porvencer'?(f.x.estado==='prueba'&&f.x.dias<=7):f.x.estado===PLAT.filtro))
+    .filter(f=>!q||(f.e.nombre||'').toLowerCase().includes(q)||(f.e.codigo||'').toLowerCase().includes(q)||(f.c?.email||'').toLowerCase().includes(q))
+    .sort((a,b)=>(ms(b.e.creado)||0)-(ms(a.e.creado)||0));
+  const chips=[['todas','Todas'],['prueba','En prueba'],['porvencer','Vencen pronto'],['activa','Activas'],['bloqueadas','Bloqueadas']].map(([k,t])=>`<button class="btn sm ${PLAT.filtro===k?'pri':''}" data-a="platFiltro" data-v="${k}">${t}</button>`).join('');
+  return `<div class="admin" style="grid-template-columns:minmax(0,1fr)"><div class="stack">
+    <div class="row between"><div><h2>Panel de plataforma</h2><div class="muted">Todas las empresas que usan Cartera Diaria. Solo tú ves esta sección.</div></div>
+      ${ME?`<button class="btn" data-a="role" data-v="${ME.rol}">Volver a mi empresa</button>`:''}</div>
+    <div class="kpis">
+      <div class="kpi"><div class="label">Empresas</div><div class="v">${filas.length}</div><div class="s">registradas</div></div>
+      <div class="kpi"><div class="label">Activas</div><div class="v" style="color:var(--ok)">${n('activa')}</div><div class="s">pagando</div></div>
+      <div class="kpi"><div class="label">En prueba</div><div class="v">${n('prueba')}</div><div class="s">${porVencer} ${porVencer===1?'vence':'vencen'} en 7 días o menos</div></div>
+      <div class="kpi"><div class="label">Bloqueadas</div><div class="v" style="color:var(--bad)">${n('suspendida')+n('vencida')}</div><div class="s">${n('suspendida')} suspendidas · ${n('vencida')} con prueba vencida</div></div>
+      <div class="kpi"><div class="label">Ingreso mensual</div><div class="v">${$$(ingreso)}</div><div class="s">según el plan de las activas</div></div>
+    </div>
+    <div class="row">${chips}<div class="f" style="margin-left:auto;min-width:220px;flex:1;max-width:320px"><input id="platBuscar" placeholder="Buscar empresa, código o correo" value="${esc(PLAT.buscar)}" aria-label="Buscar empresa"></div></div>
+    <div class="tablewrap"><table><thead><tr><th>Empresa</th><th>Estado</th><th>Plan</th><th class="n">Uso</th><th>Creada</th><th>Último acceso</th><th></th></tr></thead><tbody>
+    ${vis.map(({e,x,c,u})=>`<tr class="click" data-a="verEmpresa" data-v="${e.id}"><td><b>${esc(e.nombre||'(sin nombre)')}</b><div class="small muted">${esc(e.codigo||'')}${c?` · ${esc(c.nombre||'')} · ${esc(c.email||'')}`:''}</div>${e.notaPlataforma?`<div class="small" style="color:var(--warn)">${esc(e.notaPlataforma)}</div>`:''}</td>
+      <td>${chipEmpresa(e)}</td><td>${esc(e.plan?.nombre||'—')}<div class="small muted">${limTxt(e.plan)}</div></td>
+      <td class="n">${u?`${u.cobradores} cobr.<div class="small muted">${u.prestamos} préstamos</div>`:'<span class="muted">…</span>'}</td>
+      <td class="small">${fMs(e.creado)}</td><td class="small">${haceCuanto(e.ultimoAcceso)}</td><td class="n"><button class="btn sm">Gestionar</button></td></tr>`).join('')||`<tr><td colspan="7" class="empty">${PLAT.emps.length?'Ninguna empresa coincide.':'Cargando empresas…'}</td></tr>`}
+    </tbody></table></div>
+    <p class="small muted" style="margin:0">El uso cuenta cobradores y préstamos registrados (activos y pagados). Por privacidad, desde aquí no se ven clientes ni pagos de las empresas.</p>
+  </div></div>`;
+}
+function fEmpresa(id){
+  const e=PLAT.emps.find(x=>x.id===id);if(!e)return;
+  const x=estadoEmpresa(e,DIAS_PRUEBA),c=PLAT.contactos[id]||e.contacto,u=PLAT.uso[id];
+  const base=Math.max(Date.now(),x.hasta||0);
+  abrir(`${head(esc(e.nombre||'Empresa'),`Código ${esc(e.codigo||'')} · creada el ${fMs(e.creado)}`)}
+    <div class="stack">
+      <div class="row">${chipEmpresa(e)} ${x.hasta?`<span class="small muted">Prueba hasta el ${fMs(x.hasta)}</span>`:''}</div>
+      <div class="kv"><div><span>Contacto</span><b>${esc(c?.nombre||'—')}</b><small class="muted" style="display:block;overflow-wrap:anywhere">${esc(c?.email||'')}</small></div>
+        <div><span>Plan</span><b>${esc(e.plan?.nombre||'—')}</b><small class="muted" style="display:block">${limTxt(e.plan)}</small></div>
+        <div><span>Uso</span><b>${u?`${u.cobradores} cobradores`:'…'}</b><small class="muted" style="display:block">${u?u.prestamos+' préstamos':''}</small></div>
+        <div><span>Último acceso</span><b>${haceCuanto(e.ultimoAcceso)}</b></div></div>
+      <div class="panel stack"><h3 style="margin:0">Estado</h3>
+        <div class="row">
+          <button class="btn ok" data-a="empEstado" data-v="${id}" data-e="activa" ${x.estado==='activa'?'disabled':''}>Activar</button>
+          <button class="btn bad" data-a="empEstado" data-v="${id}" data-e="suspendida" ${x.estado==='suspendida'?'disabled':''}>${UI.confirmar==='susp'+id?'Confirmar suspensión':'Suspender'}</button>
+        </div>
+        <p class="small muted" style="margin:0">Al suspender, la oficina, los cobradores y los clientes de esa empresa ven un aviso y no pueden trabajar. Sus datos no se borran; al activarla, todo vuelve como estaba.</p></div>
+      <div class="panel stack"><h3 style="margin:0">Periodo de prueba</h3>
+        <div class="row">${[7,15,30].map(d=>`<button class="btn" data-a="empExtender" data-v="${id}" data-d="${d}">+${d} días</button>`).join('')}</div>
+        <p class="small muted" style="margin:0">Deja la empresa en prueba y corre la fecha de vencimiento a partir de ${x.hasta&&x.hasta>Date.now()?'la fecha actual de vencimiento':'hoy'}. Por ejemplo, +15 días: hasta el ${fMs(base+15*864e5)}.</p></div>
+      <div class="panel stack"><h3 style="margin:0">Plan de suscripción</h3>
+        <div class="row" style="align-items:flex-end"><div class="f" style="flex:1;min-width:200px"><label for="empPlanSel">Plan</label><select id="empPlanSel">${PLANES_SUSCRIPCION.map((p,i)=>`<option value="${i}" ${e.plan?.nombre===p.nombre?'selected':''}>${esc(p.nombre)} · ${limTxt(p)}${p.precio?' · '+$$(p.precio)+'/mes':''}</option>`).join('')}</select></div>
+        <button class="btn pri" data-a="empPlan" data-v="${id}">Aplicar plan</button></div></div>
+      <div class="panel stack"><h3 style="margin:0">Nota interna</h3>
+        <div class="f"><label for="empNota">Solo tú la ves (por ejemplo: pagó hasta octubre, pidió factura)</label><textarea id="empNota">${esc(e.notaPlataforma||'')}</textarea></div>
+        <div><button class="btn" data-a="empNota" data-v="${id}">Guardar nota</button></div></div>
+    </div>`);
+}
+function vBloqueada(x){
+  const t=S.tenant||{},wa=telWa(SOPORTE.telefono);
+  const titulo=x.estado==='suspendida'?'La cuenta está suspendida':'Terminó el periodo de prueba';
+  const cuerpo=esAdmin()?`Tus datos están guardados y no se ha borrado nada. Para seguir usando Cartera Diaria con ${esc(t.nombre||'tu empresa')}, comunícate con nosotros:`
+    :`La cuenta de ${esc(t.nombre||'la empresa')} está pausada. Habla con la oficina para más información.`;
+  return `<div class="auth"><div class="panel stack"><h2>${titulo}</h2><p style="margin:0">${cuerpo}</p>
+    ${esAdmin()?`<div class="kv"><div><span>${esc(SOPORTE.nombre)}</span><b style="user-select:all">${esc(SOPORTE.telefono)}</b></div><div><span>Correo</span><b style="user-select:all;overflow-wrap:anywhere">${esc(SOPORTE.correo)}</b></div></div>
+      <div class="row">${wa?`<a class="btn pri" href="https://wa.me/${wa}?text=${encodeURIComponent('Hola, quiero activar Cartera Diaria para '+(t.nombre||'mi empresa')+' (código '+(t.codigo||'')+').')}" target="_blank" rel="noopener">Escribir por WhatsApp</a>`:''}</div>`:''}
+    <div class="row">${B.esSuper?'<button class="btn" data-a="role" data-v="plataforma">Panel de plataforma</button>':''}<button class="btn" data-a="salir">Salir</button></div></div></div>`;
+}
+function bannerPrueba(){
+  if(!esAdmin()||!S.tenant)return '';
+  const x=estadoEmpresa(S.tenant,DIAS_PRUEBA);if(x.estado!=='prueba')return '';
+  return `<div class="note ${x.dias<=7?'warn':'info'} demo">Estás en el periodo de prueba: te ${x.dias===1?'queda 1 día':'quedan '+x.dias+' días'}. Para activar tu plan escribe a ${esc(SOPORTE.nombre)} al ${esc(SOPORTE.telefono)} o a ${esc(SOPORTE.correo)}.</div>`;
+}
+
 /* ===================== Ingreso ===================== */
 const ERRORES={'auth/invalid-credential':'El correo o la contraseña no coinciden.','auth/wrong-password':'El correo o la contraseña no coinciden.','auth/user-not-found':'No hay una cuenta con esos datos.',
   'auth/email-already-in-use':'Ya existe una cuenta con ese correo.','auth/weak-password':'La contraseña debe tener al menos 6 caracteres.','auth/invalid-email':'Revisa el correo: no parece válido.',
@@ -895,11 +989,12 @@ function bnav(){
   n.hidden=false;n.innerHTML=`<div role="tablist">${items.map(([k,t,ic])=>`<button role="tab" aria-selected="${cur===k}" data-a="${act}" data-v="${k}">${ico(ic||k)}${t}</button>`).join('')}</div>`;
 }
 function cabecera(){
-  const seg=$('#segRol'),listo=ME&&S&&S.config;
-  seg.hidden=!(listo&&esAdmin());
+  const seg=$('#segRol'),listo=ME&&S&&S.config,opera=!listo||estadoEmpresa(S.tenant,DIAS_PRUEBA).opera;
+  seg.hidden=!(listo&&esAdmin()&&opera&&UI.role!=='plataforma');
+  const bp=$('#btnPlat');bp.hidden=!(B&&B.esSuper);bp.setAttribute('aria-pressed',UI.role==='plataforma');bp.classList.toggle('pri',UI.role==='plataforma');
   seg.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===UI.role));
   $('#empresa').textContent=listo?(S.config.empresa||'Cartera Diaria'):'Cartera Diaria';
-  $('#subtitulo').textContent=!listo?'Control de préstamos':B&&B.demo?'Modo demostración':`${ME.nombre||''} · ${{admin:'Oficina',cobrador:'Cobrador',cliente:'Cliente'}[ME.rol]}`;
+  $('#subtitulo').textContent=UI.role==='plataforma'?'Panel de plataforma':!listo?'Control de préstamos':B&&B.demo?'Modo demostración':`${ME.nombre||''} · ${{admin:'Oficina',cobrador:'Cobrador',cliente:'Cliente'}[ME.rol]}`;
   $('#btnSalir').hidden=!(ME&&B&&!B.demo);
   const red=$('#red');
   if(!navigator.onLine){red.hidden=false;red.className='chip c-warn';red.textContent='Sin conexión'+(RED.pendientes?` · ${RED.pendientes} por enviar`:'')}
@@ -910,11 +1005,16 @@ function cabecera(){
 function render(){
   cabecera();
   CHARTS=[];$('#tip').hidden=true;
+  if(UI.role!=='plataforma')dejarPlataforma();
+  if(UI.role==='plataforma'&&B&&B.esSuper&&AUTH){const y0=scrollY;$('#app').innerHTML=vPlataforma();bnav();scrollTo(0,y0);
+    const pb=$('#platBuscar');if(pb)pb.oninput=()=>{PLAT.buscar=pb.value;const pos=pb.selectionStart;render();const nb=$('#platBuscar');nb.focus();nb.setSelectionRange(pos,pos)};return}
   if(!ME||!S||!S.config){$('#app').innerHTML=vIngreso();bnav();return}
+  const est=estadoEmpresa(S.tenant,DIAS_PRUEBA);
+  if(!est.opera){$('#app').innerHTML=vBloqueada(est);bnav();return}
   if(UI.role==='cobrador'&&!S.cobradores.some(k=>k.id===UI.cobradorId))UI.cobradorId=S.cobradores[0]?.id||null;
   if(UI.role==='cliente'&&!S.clientes.some(c=>c.id===UI.clienteId))UI.clienteId=S.clientes[0]?.id||null;
   const y=scrollY;
-  const aviso=B.demo?`<div class="note info demo">Modo demostración: los datos de ejemplo quedan solo en este navegador. Para usarla de verdad, conecta la app a Firebase (ver LEEME.md).</div>`:'';
+  const aviso=(B.demo?`<div class="note info demo">Modo demostración: los datos de ejemplo quedan solo en este navegador. Para usarla de verdad, conecta la app a Firebase (ver LEEME.md).</div>`:'')+(UI.role==='admin'?bannerPrueba():'');
   $('#app').innerHTML=aviso+(UI.role==='admin'?vAdmin():UI.role==='cobrador'?(UI.cobradorId?vCobrador():'<div class="phone empty">Todavía no hay cobradores.</div>'):(UI.clienteId?vCliente():'<div class="phone empty">Todavía no hay clientes.</div>'));
   bnav();dibujar();
   scrollTo(0,y);
@@ -952,8 +1052,20 @@ document.addEventListener('click',ev=>{
   if(ev.target.id==='modal'){cerrar();return}
   const a=ev.target.closest('[data-a]');if(!a)return;
   const v=a.dataset.v,act=a.dataset.a;
-  if(!['borrarGasto','borrarBase','reset','borrarPlan','anular','rechazarSol','copiarRecibo','copiarMsg','limIgualUsura','desactivar'].includes(act))UI.confirmar=null;
+  if(!['borrarGasto','borrarBase','reset','borrarPlan','anular','rechazarSol','copiarRecibo','copiarMsg','limIgualUsura','desactivar','empEstado'].includes(act))UI.confirmar=null;
   switch(act){
+    case 'plataforma':UI.role=UI.role==='plataforma'?(ME?ME.rol:'plataforma'):'plataforma';cerrar();render();scrollTo(0,0);break;
+    case 'platFiltro':PLAT.filtro=v;render();break;
+    case 'verEmpresa':ultimo=()=>fEmpresa(v);ultimo();break;
+    case 'empEstado':{const e=PLAT.emps.find(x=>x.id===v),nuevo=a.dataset.e;
+      if(nuevo==='suspendida'&&UI.confirmar!=='susp'+v){UI.confirmar='susp'+v;fEmpresa(v);break}
+      UI.confirmar=null;a.disabled=true;accion(async()=>{await B.actualizarEmpresa(v,{estado:nuevo});luego(()=>fEmpresa(v))},nuevo==='activa'?`${esc(e.nombre)} quedó activa`:`${esc(e.nombre)} quedó suspendida`);break}
+    case 'empExtender':{const e=PLAT.emps.find(x=>x.id===v),x=estadoEmpresa(e,DIAS_PRUEBA),dias=Number(a.dataset.d);
+      const hasta=Math.max(Date.now(),x.estado==='prueba'||x.estado==='vencida'?(x.hasta||0):0)+dias*864e5;
+      a.disabled=true;accion(async()=>{await B.actualizarEmpresa(v,{estado:'prueba',pruebaHasta:hasta});luego(()=>fEmpresa(v))},`Prueba de ${esc(e.nombre)} hasta el ${fMs(hasta)}`);break}
+    case 'empPlan':{const e=PLAT.emps.find(x=>x.id===v),p=PLANES_SUSCRIPCION[Number($('#empPlanSel').value)];
+      a.disabled=true;accion(async()=>{await B.actualizarEmpresa(v,{plan:{nombre:p.nombre,maxCobradores:p.maxCobradores,maxPrestamos:p.maxPrestamos}});luego(()=>fEmpresa(v))},`${esc(e.nombre)} ahora tiene el plan ${esc(p.nombre)}`);break}
+    case 'empNota':{const txt=$('#empNota').value.trim();accion(async()=>{await B.actualizarEmpresa(v,{notaPlataforma:txt})},'Nota guardada');break}
     case 'role':UI.role=v;if(v==='cobrador'&&!UI.cobradorId)UI.cobradorId=S.cobradores[0]?.id;if(v==='cliente'&&!UI.clienteId)UI.clienteId=S.clientes[0]?.id;cerrar();render();scrollTo(0,0);break;
     case 'tema':UI.tema={auto:'light',light:'dark',dark:'auto'}[UI.tema];aplicarTema();saveUI();dibujar();break;
     case 'authTab':UI.authTab=v;render();break;
@@ -1074,6 +1186,9 @@ function onData(nuevo,meta){S=nuevo;RED=meta||{pendientes:0};const ae=document.a
 function onAuth(info){
   AUTH=info;ME=info&&info.me&&!info.inactivo?info.me:null;CARGA='listo';$('#toast').hidden=true;
   if(ME&&ME.rol==='admin'&&!(B&&B.demo))UI.role='admin';
+  if(info&&info.super&&!ME)UI.role='plataforma';
+  if(UI.role==='plataforma'&&!(info&&info.super)&&!(B&&B.demo))UI.role=ME?ME.rol:'admin';
+  if(!info){dejarPlataforma();PLAT.emps=[];PLAT.uso={};PLAT.contactos={};PLAT.pedidos={}}
   if(ME&&ME.rol!=='admin'){UI.role=ME.rol;if(ME.rol==='cobrador')UI.cobradorId=ME.cobradorId;if(ME.rol==='cliente')UI.clienteId=ME.clienteId}
   if(!ME){S=S&&B&&B.demo?S:null;cerrar();if(UI.authTab==='registro'&&info===null)UI.authTab='personal'}
   render();

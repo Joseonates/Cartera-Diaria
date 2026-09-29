@@ -20,7 +20,17 @@ beforeEach(async () => {
   await env.clearFirestore();
   await env.withSecurityRulesDisabled(async ctx => {
     const f = ctx.firestore(), s = (p, v) => setDoc(doc(f, ...p.split('/')), v);
-    await s(`tenants/${T1}`, { nombre: 'Uno', owner: 'admin1', codigo: 'AAA111', config: { empresa: 'Uno' }, plan: { nombre: 'Prueba', maxCobradores: 2 } });
+    await s(`tenants/${T1}`, { nombre: 'Uno', owner: 'admin1', codigo: 'AAA111', estado: 'activa', creado: Timestamp.now(), config: { empresa: 'Uno' }, plan: { nombre: 'Prueba', maxCobradores: 2, maxPrestamos: 50 } });
+    await s('tenants/susp', { nombre: 'Suspendida', owner: 'admin3', codigo: 'SSS333', estado: 'suspendida', creado: Timestamp.now(), config: {} });
+    await s('tenants/vencida', { nombre: 'Vencida', owner: 'admin4', codigo: 'VVV444', estado: 'prueba', creado: Timestamp.fromMillis(Date.now() - 40 * 86400000), config: {} });
+    await s('tenants/extendida', { nombre: 'Extendida', owner: 'admin5', codigo: 'EEE555', estado: 'prueba', creado: Timestamp.fromMillis(Date.now() - 40 * 86400000), pruebaHasta: Timestamp.fromMillis(Date.now() + 5 * 86400000), config: {} });
+    await s('users/admin3', { tenantId: 'susp', rol: 'admin', activo: true });
+    await s('users/admin4', { tenantId: 'vencida', rol: 'admin', activo: true });
+    await s('users/admin5', { tenantId: 'extendida', rol: 'admin', activo: true });
+    await s('tenants/susp/prestamos/px', { clienteId: 'c1', cobradorId: 'k1', monto: 1 });
+    await s('tenants/vencida/prestamos/px', { clienteId: 'c1', cobradorId: 'k1', monto: 1 });
+    await s('tenants/extendida/prestamos/px', { clienteId: 'c1', cobradorId: 'k1', monto: 1 });
+    await s('superadmins/jefe', { nombre: 'Dueño de la plataforma' });
     await s(`tenants/${T2}`, { nombre: 'Dos', owner: 'admin2', codigo: 'BBB222', config: { empresa: 'Dos' }, plan: { nombre: 'Prueba' } });
     await s('codigos/AAA111', { tenantId: T1 });
     await s('users/admin1', { tenantId: T1, rol: 'admin', activo: true, nombre: 'Admin uno' });
@@ -44,10 +54,22 @@ beforeEach(async () => {
 describe('Registro de empresa', () => {
   it('un usuario nuevo crea su empresa, su código y su perfil de administrador', async () => {
     const f = db('nuevo'), b = writeBatch(f);
-    b.set(doc(f, 'tenants', 'T3'), { nombre: 'Tres', owner: 'nuevo', codigo: 'CCC333', config: {}, plan: {} });
+    b.set(doc(f, 'tenants', 'T3'), { nombre: 'Tres', owner: 'nuevo', codigo: 'CCC333', estado: 'prueba', creado: serverTimestamp(), config: {}, plan: { nombre: 'Prueba', maxCobradores: 2, maxPrestamos: 50 } });
     b.set(doc(f, 'codigos', 'CCC333'), { tenantId: 'T3' });
     b.set(doc(f, 'users', 'nuevo'), { tenantId: 'T3', rol: 'admin', activo: true });
     await assertSucceeds(b.commit());
+  });
+  it('una empresa nueva no puede nacer activa, con otro plan ni con prueba extendida', async () => {
+    const intento = async (extra) => {
+      const f = db('nuevo'), b = writeBatch(f);
+      b.set(doc(f, 'tenants', 'T6'), { nombre: 'Seis', owner: 'nuevo', codigo: 'FFF666', estado: 'prueba', creado: serverTimestamp(), config: {}, plan: { nombre: 'Prueba', maxCobradores: 2, maxPrestamos: 50 }, ...extra });
+      b.set(doc(f, 'codigos', 'FFF666'), { tenantId: 'T6' });
+      b.set(doc(f, 'users', 'nuevo'), { tenantId: 'T6', rol: 'admin', activo: true });
+      return b.commit();
+    };
+    await assertFails(intento({ estado: 'activa' }));
+    await assertFails(intento({ plan: { nombre: 'Empresa', maxCobradores: 0, maxPrestamos: 0 } }));
+    await assertFails(intento({ pruebaHasta: Timestamp.fromMillis(Date.now() + 365 * 86400000) }));
   });
   it('nadie se vuelve administrador de una empresa que ya existe', async () => {
     await assertFails(setDoc(d('intruso', 'users', 'intruso'), { tenantId: T1, rol: 'admin', activo: true }));
@@ -77,9 +99,11 @@ describe('Administración', () => {
     await assertSucceeds(getDocs(collection(db('admin1'), 'tenants', T1, 'prestamos')));
   });
   it('cambia la configuración', async () => { await assertSucceeds(updateDoc(t1('admin1'), { config: { empresa: 'Nuevo nombre' } })); });
-  it('no puede cambiar su plan de suscripción ni el código', async () => {
+  it('no puede cambiar su plan, su estado, su prueba ni el código', async () => {
     await assertFails(updateDoc(t1('admin1'), { plan: { nombre: 'Empresa', maxCobradores: 0 } }));
     await assertFails(updateDoc(t1('admin1'), { codigo: 'ZZZ999' }));
+    await assertFails(updateDoc(d('admin4', 'tenants', 'vencida'), { estado: 'activa' }));
+    await assertFails(updateDoc(d('admin4', 'tenants', 'vencida'), { pruebaHasta: Timestamp.fromMillis(Date.now() + 86400000) }));
   });
   it('crea el acceso de un cobrador nuevo', async () => {
     await assertSucceeds(setDoc(d('admin1', 'users', 'cob3'), { tenantId: T1, rol: 'cobrador', cobradorId: 'k3', activo: true }));
@@ -161,4 +185,37 @@ describe('Cliente', () => {
     await assertFails(setDoc(t1('cli1', 'solicitudes', 's3'), { clienteId: 'c1', monto: 300000, estado: 'aprobada' }));
   });
   it('no registra pagos', async () => { await assertFails(setDoc(t1('cli1', 'pagos', 'n8'), pago({ creadoPor: 'cli1' }))); });
+});
+
+describe('Plataforma (dueño)', () => {
+  it('el dueño ve la lista de empresas; nadie más', async () => {
+    await assertSucceeds(getDocs(collection(db('jefe'), 'tenants')));
+    await assertFails(getDocs(collection(db('admin1'), 'tenants')));
+  });
+  it('el dueño activa, suspende, extiende la prueba y cambia el plan', async () => {
+    await assertSucceeds(updateDoc(d('jefe', 'tenants', 'vencida'), { estado: 'activa' }));
+    await assertSucceeds(updateDoc(d('jefe', 'tenants', T1), { estado: 'suspendida', notaPlataforma: 'No pagó' }));
+    await assertSucceeds(updateDoc(d('jefe', 'tenants', 'susp'), { estado: 'prueba', pruebaHasta: Timestamp.fromMillis(Date.now() + 15 * 86400000) }));
+    await assertSucceeds(updateDoc(d('jefe', 'tenants', 'extendida'), { plan: { nombre: 'Profesional', maxCobradores: 5, maxPrestamos: 300 } }));
+  });
+  it('el dueño no cambia la configuración de una empresa ni inventa estados', async () => {
+    await assertFails(updateDoc(d('jefe', 'tenants', T1), { config: { limiteEA: 999 } }));
+    await assertFails(updateDoc(d('jefe', 'tenants', T1), { estado: 'gratis-para-siempre' }));
+  });
+  it('el dueño cuenta préstamos y cobradores de una empresa, pero no ve pagos ni clientes', async () => {
+    await assertSucceeds(getDocs(collection(db('jefe'), 'tenants', T1, 'prestamos')));
+    await assertFails(getDocs(collection(db('jefe'), 'tenants', T1, 'clientes')));
+    await assertFails(getDocs(collection(db('jefe'), 'tenants', T1, 'pagos')));
+  });
+  it('nadie se agrega como dueño de la plataforma', async () => {
+    await assertFails(setDoc(d('admin1', 'superadmins', 'admin1'), { nombre: 'Yo' }));
+  });
+  it('una empresa suspendida ve su ficha, pero no sus datos', async () => {
+    await assertSucceeds(getDoc(d('admin3', 'tenants', 'susp')));
+    await assertFails(getDocs(collection(db('admin3'), 'tenants', 'susp', 'prestamos')));
+  });
+  it('con la prueba vencida no opera; con la prueba extendida sí', async () => {
+    await assertFails(getDocs(collection(db('admin4'), 'tenants', 'vencida', 'prestamos')));
+    await assertSucceeds(getDocs(collection(db('admin5'), 'tenants', 'extendida', 'prestamos')));
+  });
 });

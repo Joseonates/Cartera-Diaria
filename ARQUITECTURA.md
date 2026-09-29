@@ -10,7 +10,7 @@
 | `js/config.js` | Datos del proyecto de Firebase, plan inicial y registro abierto |
 | `sw.js` + `manifest.webmanifest` + `icons/` | PWA: instalable y abre sin internet |
 | `firestore.rules` | Seguridad: quién lee y escribe qué |
-| `tests/reglas.test.mjs` | 30 pruebas de las reglas contra el emulador |
+| `tests/reglas.test.mjs` | 38 pruebas de las reglas contra el emulador |
 
 Sin paso de compilación: se publica tal cual en GitHub Pages. El SDK de Firebase (v12.19.0) se carga desde gstatic.com.
 
@@ -21,9 +21,11 @@ El perfil de cada usuario está en `users/{uid}` con su empresa y su rol. Las re
 así que no hace falta Cloud Functions y todo funciona en el plan gratuito.
 
 ```
+superadmins/{uid}         nombre            ← dueño de la plataforma (se crea a mano)
 users/{uid}               tenantId, rol (admin | cobrador | cliente), cobradorId | clienteId, nombre, email, activo
 codigos/{CODIGO}          tenantId          ← garantiza que el código de empresa no se repita
-tenants/{empresa}         nombre, owner, codigo, plan{nombre,maxCobradores,maxPrestamos}, config{...}
+tenants/{empresa}         nombre, owner, codigo, estado (prueba | activa | suspendida), creado, pruebaHasta,
+                          plan{nombre,maxCobradores,maxPrestamos}, contacto, ultimoAcceso, notaPlataforma, config{...}
   planes/{id}             nombre, metodo, tasa, frecuencia, cuotas, domingos
   cobradores/{id}         nombre, telefono, ruta, comision, comBase, codigo, email
   clientes/{id}           nombre, cedula, telefono, negocio, direccion, barrio, referencia, cobradorId, orden, app
@@ -67,3 +69,13 @@ Decisiones:
   lo envía en orden. La barra superior muestra "Sin conexión" y cuántos pagos faltan por enviar.
 - El service worker guarda la app, el SDK y las fuentes, así que la app abre sin señal después de la primera vez.
 - Crear accesos y crear empresa sí necesitan internet.
+
+## Plataforma (dueño de la app)
+
+- Toda empresa nace en `estado: 'prueba'` con el plan de prueba; las reglas lo exigen al crearla.
+- La empresa opera si está `activa`, o si está en `prueba` y no ha pasado `pruebaHasta`
+  (o 30 días desde `creado` si no tiene esa fecha). Si no opera, sus miembros solo pueden leer la ficha de la empresa
+  para mostrar el aviso; todo lo demás queda cerrado en el servidor.
+- Solo quien está en `superadmins` lista las empresas y cambia `estado`, `pruebaHasta`, `plan` y `notaPlataforma`.
+  El administrador de cada empresa solo cambia `config`, `nombre` y `ultimoAcceso`.
+- El dueño puede contar cobradores y préstamos de cada empresa, pero no leer clientes ni pagos.

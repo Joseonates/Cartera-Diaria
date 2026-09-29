@@ -31,6 +31,18 @@ export function numeroRecibo(codigo) {
   let n = 0; try { n = Number(localStorage.getItem(k) || 0) + 1; localStorage.setItem(k, n); } catch (e) { n = Math.floor(Math.random() * 900) + 100; }
   return `${codigo}-${fecha.slice(5).replace('-', '')}-${pad(n)}`;
 }
+// Convierte fechas de Firestore (Timestamp), Date o texto a milisegundos.
+export const ms = v => v == null ? null : typeof v.toMillis === 'function' ? v.toMillis() : v instanceof Date ? v.getTime() : typeof v === 'string' ? Date.parse(v) : typeof v === 'number' ? v : (v.seconds != null ? v.seconds * 1000 : null);
+// ¿La empresa puede operar? Misma lógica que las reglas de seguridad.
+export function estadoEmpresa(t, diasPrueba = 30) {
+  if (!t) return { opera: true, estado: 'activa' };
+  const estado = t.estado || 'activa';
+  if (estado === 'activa') return { opera: true, estado };
+  if (estado === 'suspendida') return { opera: false, estado };
+  const hasta = ms(t.pruebaHasta) ?? ((ms(t.creado) ?? Date.now()) + diasPrueba * 864e5);
+  const dias = Math.ceil((hasta - Date.now()) / 864e5);
+  return dias > 0 ? { opera: true, estado: 'prueba', dias, hasta } : { opera: false, estado: 'vencida', dias: 0, hasta };
+}
 export const correoCliente = (cedula, codigo) => `${String(cedula).replace(/\D/g, '')}.${String(codigo).trim().toLowerCase()}@${DOMINIO_CLIENTES}`;
 
 // ------------------------------------------------------------
@@ -38,7 +50,7 @@ export const correoCliente = (cedula, codigo) => `${String(cedula).replace(/\D/g
 // ------------------------------------------------------------
 export function backendDemo({ generar, onData, onAuth }) {
   const KEY = 'cartera-diaria-demo-v4';
-  let S;
+  let S, EMP = null, empCb = null;
   try { S = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) { S = null; }
   if (!S) S = generar();
   const guardarLocal = () => { try { localStorage.setItem(KEY, JSON.stringify({ ...S, prestamos: S.prestamos.map(({ pagos, novedades, num, ...r }) => r) })); } catch (e) { } };
@@ -70,6 +82,25 @@ export function backendDemo({ generar, onData, onAuth }) {
     async crearAcceso() { throw new Error('Los accesos se crean cuando conectes la app a Firebase.'); },
     async desactivarAcceso() { throw new Error('Disponible cuando conectes la app a Firebase.'); },
     restablecer() { S = generar(); emitir(); },
+    // Panel de plataforma de ejemplo
+    esSuper: true,
+    escucharEmpresas(cb) {
+      const dia = 864e5, n = Date.now();
+      if (!EMP) EMP = [
+        { id: 'demo', ...S.tenant, estado: 'activa', creado: n - 60 * dia, ultimoAcceso: n, contacto: { nombre: 'Administración', email: 'oficina@ejemplo.co' }, plan: { nombre: 'Profesional', maxCobradores: 5, maxPrestamos: 300 } },
+        { id: 'e2', nombre: 'Créditos El Progreso', codigo: 'K7M2PQ', estado: 'prueba', creado: n - 25 * dia, ultimoAcceso: n - dia, contacto: { nombre: 'Martha Gil', email: 'martha@elprogreso.co' }, plan: { nombre: 'Prueba', maxCobradores: 2, maxPrestamos: 50 }, uso: { prestamos: 38, cobradores: 2 } },
+        { id: 'e3', nombre: 'Inversiones Doña Gloria', codigo: 'R3TX8W', estado: 'prueba', creado: n - 41 * dia, ultimoAcceso: n - 12 * dia, contacto: { nombre: 'Gloria Mejía', email: 'gloria@correo.co' }, plan: { nombre: 'Prueba', maxCobradores: 2, maxPrestamos: 50 }, uso: { prestamos: 12, cobradores: 1 } },
+        { id: 'e4', nombre: 'Préstamos Rápidos del Sur', codigo: 'H9ZL4A', estado: 'suspendida', creado: n - 90 * dia, ultimoAcceso: n - 20 * dia, notaPlataforma: 'Dos meses sin pagar la suscripción', contacto: { nombre: 'Jairo Ramos', email: 'jairo@correo.co' }, plan: { nombre: 'Básico', maxCobradores: 2, maxPrestamos: 100 }, uso: { prestamos: 96, cobradores: 2 } },
+        { id: 'e5', nombre: 'Fondo de Empleados Andino', codigo: 'P2WD6N', estado: 'activa', creado: n - 150 * dia, ultimoAcceso: n - 2 * 3600e3, contacto: { nombre: 'Luisa Parra', email: 'tesoreria@fondoandino.co' }, plan: { nombre: 'Empresa', maxCobradores: 0, maxPrestamos: 0 }, uso: { prestamos: 412, cobradores: 7 } }];
+      empCb = cb; setTimeout(() => cb(EMP.map(e => ({ ...e }))), 0); return () => { empCb = null; };
+    },
+    async usoEmpresa(t) { const e = EMP.find(x => x.id === t); return e.uso || { prestamos: S.prestamos.length, cobradores: S.cobradores.length }; },
+    async contactoEmpresa(e) { return e.contacto || null; },
+    async actualizarEmpresa(t, cambios) {
+      const e = EMP.find(x => x.id === t); Object.assign(e, cambios);
+      if (t === 'demo') { Object.assign(S.tenant, cambios); emitir(); }
+      if (empCb) empCb(EMP.map(x => ({ ...x })));
+    },
     async salir() { }, async entrar() { }, async entrarCliente() { }, async registrarEmpresa() { }, async recuperar() { }
   };
   setTimeout(() => { onAuth({ me: B.me }); emitir(); }, 0);
@@ -96,14 +127,27 @@ export async function backendFirebase({ onData, onAuth, onError, configInicial, 
   // Las escrituras sin internet quedan en cola y se envían solas; no se espera la respuesta del servidor.
   const enviar = (promesa, que) => { promesa.catch(e => onError && onError(e, que)); };
 
+  let datosUnsubs = [], datosActivos = false, accesoMarcado = false;
   function suscribir() {
     unsubs.forEach(u => u()); unsubs = []; S = vacio();
+    datosUnsubs.forEach(u => u()); datosUnsubs = []; datosActivos = false; accesoMarcado = false;
+    unsubs.push(F.onSnapshot(F.doc(db, 'tenants', tid), d => {
+      S.tenant = { id: d.id, ...d.data({ serverTimestamps: 'estimate' }) }; S.config = S.tenant.config;
+      const opera = estadoEmpresa(S.tenant).opera;
+      if (opera && !datosActivos) suscribirDatos();
+      if (!opera && datosActivos) { datosUnsubs.forEach(u => u()); datosUnsubs = []; datosActivos = false; COLECCIONES.forEach(c => S[c] = []); }
+      if (opera && me.rol === 'admin' && !accesoMarcado && navigator.onLine) { accesoMarcado = true; F.updateDoc(F.doc(db, 'tenants', tid), { ultimoAcceso: F.serverTimestamp() }).catch(() => { }); }
+      emitir();
+    }, e => onError && onError(e, 'leer empresa')));
+  }
+  function suscribirDatos() {
+    datosActivos = true;
+    const unsubs = datosUnsubs;
     const escuchar = (clave, q) => unsubs.push(F.onSnapshot(q, { includeMetadataChanges: clave === 'pagos' }, snap => {
       S[clave] = snap.docs.map(d => ({ ...d.data({ serverTimestamps: 'estimate' }), id: d.id }));
       if (clave === 'pagos') pendientes = snap.docs.filter(d => d.metadata.hasPendingWrites).length;
       emitir();
     }, e => onError && onError(e, 'leer ' + clave)));
-    unsubs.push(F.onSnapshot(F.doc(db, 'tenants', tid), d => { S.tenant = { id: d.id, ...d.data() }; S.config = S.tenant.config; emitir(); }, e => onError && onError(e, 'leer empresa')));
     const W = (c, campo, valor) => F.query(col(c), F.where(campo, '==', valor));
     escuchar('planes', col('planes'));
     if (me.rol === 'admin') {
@@ -131,17 +175,19 @@ export async function backendFirebase({ onData, onAuth, onError, configInicial, 
   let turno = 0;
   async function cargarPerfil(user) {
     const mio = ++turno; // si llega una respuesta vieja, se ignora
-    unsubs.forEach(u => u()); unsubs = []; me = null; tid = null;
+    unsubs.forEach(u => u()); unsubs = []; datosUnsubs.forEach(u => u()); datosUnsubs = []; datosActivos = false; me = null; tid = null;
+    B.esSuper = false; B.uid = user ? user.uid : null;
     if (!user) { onAuth(null); return; }
+    try { B.esSuper = (await F.getDoc(F.doc(db, 'superadmins', user.uid))).exists(); } catch (e) { B.esSuper = false; }
     let snap = null;
     try { snap = await F.getDoc(F.doc(db, 'users', user.uid)); } catch (e) { try { snap = await F.getDocFromCache(F.doc(db, 'users', user.uid)); } catch (e2) { } }
     if (mio !== turno) return;
-    if (!snap || !snap.exists()) { onAuth({ user, me: null }); return; }
+    if (!snap || !snap.exists()) { onAuth({ user, me: null, super: B.esSuper }); return; }
     me = snap.data();
     if (!me.activo) { onAuth({ user, me, inactivo: true }); return; }
     tid = me.tenantId; B.uid = user.uid; B.me = me;
     suscribir();
-    onAuth({ user, me });
+    onAuth({ user, me, super: B.esSuper });
   }
   A.onAuthStateChanged(auth, cargarPerfil);
 
@@ -161,7 +207,7 @@ export async function backendFirebase({ onData, onAuth, onError, configInicial, 
       for (let intento = 0; intento < 5; intento++) {
         const t = F.doc(F.collection(db, 'tenants')).id, codigo = aleatorio(6);
         const lote = F.writeBatch(db);
-        lote.set(F.doc(db, 'tenants', t), { nombre: empresa, owner: uid, codigo, creado: F.serverTimestamp(), config: { ...configInicial, empresa }, plan: PLAN_INICIAL });
+        lote.set(F.doc(db, 'tenants', t), { nombre: empresa, owner: uid, codigo, estado: 'prueba', creado: F.serverTimestamp(), contacto: { nombre, email: user.email || correo.trim() }, config: { ...configInicial, empresa }, plan: PLAN_INICIAL });
         lote.set(F.doc(db, 'codigos', codigo), { tenantId: t });
         lote.set(F.doc(db, 'users', uid), { tenantId: t, rol: 'admin', nombre, email: correo.trim(), activo: true });
         try { await lote.commit(); } catch (e) { if (intento < 4 && /permission|exists/i.test(e.message)) continue; throw e; }
@@ -214,6 +260,25 @@ export async function backendFirebase({ onData, onAuth, onError, configInicial, 
         await A.signOut(sa);
         return cred.user.uid;
       } finally { await deleteApp(sec); }
+    },
+    // ---- Plataforma (solo el dueño) ----
+    esSuper: false,
+    escucharEmpresas(cb) {
+      return F.onSnapshot(F.collection(db, 'tenants'), snap => cb(snap.docs.map(d => ({ ...d.data({ serverTimestamps: 'estimate' }), id: d.id }))), e => onError && onError(e, 'leer empresas'));
+    },
+    async usoEmpresa(t) {
+      const n = async c => (await F.getCountFromServer(F.collection(db, 'tenants', t, c))).data().count;
+      const [prestamos, cobradores] = await Promise.all([n('prestamos'), n('cobradores')]);
+      return { prestamos, cobradores };
+    },
+    async contactoEmpresa(e) {
+      if (e.contacto) return e.contacto;
+      const u = await F.getDoc(F.doc(db, 'users', e.owner)); return u.exists() ? { nombre: u.data().nombre, email: u.data().email } : null;
+    },
+    async actualizarEmpresa(t, cambios) {
+      const c = { ...cambios };
+      if (c.pruebaHasta != null) c.pruebaHasta = F.Timestamp.fromMillis(c.pruebaHasta);
+      await F.updateDoc(F.doc(db, 'tenants', t), c);
     },
     async desactivarAcceso(uid) { await F.updateDoc(F.doc(db, 'users', uid), { activo: false }); },
     restablecer() { }

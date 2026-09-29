@@ -28,3 +28,25 @@ export const PLAN_INICIAL = { nombre: "Prueba", maxCobradores: 2, maxPrestamos: 
 // ¿Cualquier persona puede crear su empresa desde la pantalla de ingreso?
 // Déjalo en true para vender la app como servicio; ponlo en false si solo la usará tu negocio.
 export const REGISTRO_ABIERTO = true;
+
+// ============================================================
+//  Plataforma (lo que tú controlas como dueño de la app)
+// ============================================================
+// Días de prueba de cada empresa nueva. Si lo cambias, cambia también el 30 en firestore.rules.
+// (PLAN_INICIAL también debe coincidir con las reglas: 2 cobradores y 50 préstamos.)
+export const DIAS_PRUEBA = 30;
+
+// Datos de contacto que ven las empresas en prueba, vencidas o suspendidas.
+export const SOPORTE = {
+  nombre: "Soporte Cartera Diaria",
+  telefono: "3228909446",
+  correo: "joseonates@gmail.com"
+};
+
+// Planes que puedes asignar desde el panel de plataforma (0 = sin límite).
+export const PLANES_SUSCRIPCION = [
+  { nombre: "Prueba", maxCobradores: 2, maxPrestamos: 50, precio: 0 },
+  { nombre: "Básico", maxCobradores: 2, maxPrestamos: 100, precio: 49900 },
+  { nombre: "Profesional", maxCobradores: 5, maxPrestamos: 300, precio: 99900 },
+  { nombre: "Empresa", maxCobradores: 0, maxPrestamos: 0, precio: 199900 }
+];

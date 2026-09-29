@@ -65,13 +65,36 @@ npm run publicar-reglas
 
 La primera vez hay que abrirla con internet. Después abre y funciona sin señal.
 
-## 6. Cambiar el plan de una empresa (cuando la vendas como servicio)
+## 6. Panel de plataforma: controlar las empresas que se registran
 
-Cada empresa nueva arranca con el plan de `PLAN_INICIAL` en `js/config.js`
-(2 cobradores y 50 préstamos activos). Para ampliarlo: Firestore → `tenants` → la empresa → campo `plan`
-→ cambia `nombre`, `maxCobradores` y `maxPrestamos` (0 = sin límite). El administrador de la empresa no puede cambiarlo.
+Cada empresa que se registra arranca **en prueba por 30 días**, con el plan *Prueba* (2 cobradores y 50 préstamos
+activos). Tú, como dueño de la app, la activas, la suspendes, le extiendes la prueba o le cambias el plan
+desde el **Panel de plataforma**.
 
-Si solo la vas a usar tú, pon `REGISTRO_ABIERTO = false` en `js/config.js`.
+**Darte acceso al panel (una sola vez):**
+
+1. Firebase → **Authentication** → pestaña *Usuarios* → copia el **UID** de tu cuenta (tu correo).
+2. **Firestore Database** → *Iniciar colección* → ID de la colección: `superadmins` →
+   ID del documento: **pega tu UID** → campo `nombre` (string) = tu nombre → Guardar.
+3. Sal de la app y vuelve a entrar: aparece el botón **Plataforma** arriba a la derecha.
+
+**Qué puedes hacer en el panel:**
+
+| Acción | Qué pasa |
+|---|---|
+| Activar | La empresa trabaja sin límite de tiempo (según su plan) |
+| Suspender | La oficina, sus cobradores y sus clientes ven un aviso con tus datos de contacto y no pueden trabajar. No se borra nada |
+| +7 / +15 / +30 días | Deja la empresa en prueba y corre la fecha de vencimiento |
+| Aplicar plan | Cambia el límite de cobradores y de préstamos activos |
+| Nota interna | Un apunte que solo tú ves (pagos, acuerdos) |
+
+Cuando la prueba vence, la empresa queda bloqueada igual que si estuviera suspendida, hasta que la actives
+o le extiendas la prueba. Esto lo hacen cumplir las reglas de Firestore, no solo la pantalla.
+
+Los planes, sus precios y tus datos de contacto se cambian en `js/config.js` (`PLANES_SUSCRIPCION` y `SOPORTE`).
+Por privacidad, desde el panel ves cuántos cobradores y préstamos tiene cada empresa, pero no sus clientes ni sus pagos.
+
+Si solo vas a usar la app para tu negocio, pon `REGISTRO_ABIERTO = false` en `js/config.js`.
 
 ## 7. Probar las reglas de seguridad (opcional, recomendado)
 
@@ -82,8 +105,9 @@ npm install
 npm test
 ```
 
-Corre 30 pruebas contra el emulador de Firestore: aislamiento entre empresas, qué puede hacer cada rol,
-que los pagos no se borren, que el cobrador solo deshaga un pago en los primeros 15 minutos, etc.
+Corre 38 pruebas contra el emulador de Firestore: aislamiento entre empresas, qué puede hacer cada rol,
+que los pagos no se borren, que el cobrador solo deshaga un pago en los primeros 15 minutos, que una empresa
+suspendida o con la prueba vencida no opere y que solo el dueño de la plataforma cambie estados y planes.
 
 ## 8. Cuánto aguanta el plan gratuito
 
@@ -95,6 +119,6 @@ el plan gratuito alcanza. Cuando el historial crezca mucho, el siguiente paso es
 ## 9. Lo que queda para cuando pases al plan Blaze
 
 - Cambiar el PIN de un cliente que lo olvidó (hoy hay que desactivar su app).
-- Hacer cumplir los límites del plan de suscripción desde el servidor y suspender empresas morosas.
+- Hacer cumplir los límites de cobradores y préstamos del plan desde el servidor (hoy los controla la app).
 - Cobrar la suscripción automáticamente (Wompi, Bold o Mercado Pago).
 - Fotos (cédula, negocio) y firma del cliente en el pagaré, que requieren Storage.

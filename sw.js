@@ -1,7 +1,7 @@
 // Cartera Diaria · service worker
 // Guarda la app (páginas, código, íconos, fuentes y el SDK de Firebase) para que abra sin internet.
 // Los datos NO pasan por aquí: Firestore los guarda en su propia caché y sincroniza solo.
-const VERSION = 'cartera-v2';
+const VERSION = 'cartera-v3';
 const APP = ['./', './index.html', './js/app.js', './js/backend.js', './js/config.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png'];
 

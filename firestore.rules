@@ -4,6 +4,12 @@ rules_version = '2';
 // Cada empresa (tenant) solo ve sus propios datos.
 // Roles: admin (oficina), cobrador (solo su ruta) y cliente (solo sus préstamos).
 // El rol de cada usuario vive en /users/{uid}; no hace falta Cloud Functions (plan gratuito Spark).
+//
+// Plataforma: tú (dueño) apareces en /superadmins/{tuUid}, creado a mano en la consola.
+// Cada empresa nueva arranca en estado 'prueba' por 30 días. Solo el dueño la pasa a
+// 'activa' o 'suspendida', le extiende la prueba (pruebaHasta) o le cambia el plan.
+// Una empresa suspendida o con la prueba vencida no puede leer ni escribir sus datos,
+// pero sí ve su propia ficha para mostrar el aviso. Sus datos no se borran.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -12,7 +18,14 @@ service cloud.firestore {
     function userPath(uid) { return /databases/$(database)/documents/users/$(uid); }
     function hasMe() { return signed() && exists(userPath(request.auth.uid)); }
     function me() { return get(userPath(request.auth.uid)).data; }
-    function inT(t) { return hasMe() && me().tenantId == t && me().activo == true; }
+    function isSuper() { return signed() && exists(/databases/$(database)/documents/superadmins/$(request.auth.uid)); }
+    function empresaOpera(t) {
+      let e = get(tenantPath(t)).data;
+      return e.get('estado', 'activa') == 'activa'
+        || (e.estado == 'prueba' && request.time < e.get('pruebaHasta', e.creado + duration.value(30, 'd')));
+    }
+    function miembro(t) { return hasMe() && me().tenantId == t && me().activo == true; }
+    function inT(t) { return miembro(t) && empresaOpera(t); }
     function isAdmin(t) { return inT(t) && me().rol == 'admin'; }
     function isCob(t) { return inT(t) && me().rol == 'cobrador'; }
     function isCli(t) { return inT(t) && me().rol == 'cliente'; }
@@ -22,10 +35,16 @@ service cloud.firestore {
     function soloCambia(campos) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(campos); }
     function montoValido(m) { return m is number && m > 0 && m <= 1000000000; }
 
+    // ---------- Dueño de la plataforma ----------
+    match /superadmins/{uid} {
+      allow get: if signed() && request.auth.uid == uid;
+      allow write: if false; // se crea a mano en la consola de Firebase
+    }
+
     // ---------- Usuarios ----------
     match /users/{uid} {
-      allow get: if signed() && (request.auth.uid == uid || isAdmin(resource.data.tenantId));
-      allow list: if hasMe() && isAdmin(resource.data.tenantId);
+      allow get: if signed() && (request.auth.uid == uid || isAdmin(resource.data.tenantId) || isSuper());
+      allow list: if isSuper() || (hasMe() && isAdmin(resource.data.tenantId));
       // 1) Quien crea su empresa se registra como admin en la misma escritura.
       // 2) Un admin crea accesos de cobradores y clientes de su empresa (solo cuentas nuevas).
       allow create: if signed() && (
@@ -55,16 +74,23 @@ service cloud.firestore {
 
     // ---------- Empresa ----------
     match /tenants/{t} {
-      allow get: if inT(t);
+      // Los miembros ven la ficha aunque la empresa esté suspendida (para mostrar el aviso).
+      allow get: if miembro(t) || isSuper();
+      allow list: if isSuper();
+      // Toda empresa nueva nace en prueba, con el plan de prueba (2 cobradores, 50 préstamos activos).
       allow create: if signed()
         && nuevo().owner == request.auth.uid
+        && nuevo().estado == 'prueba'
+        && nuevo().creado == request.time
+        && !('pruebaHasta' in nuevo())
+        && nuevo().plan.maxCobradores == 2 && nuevo().plan.maxPrestamos == 50
         && !exists(userPath(request.auth.uid))
         && getAfter(userPath(request.auth.uid)).data.tenantId == t;
-      // El admin cambia su configuración, pero no el dueño, el código ni el plan de suscripción.
-      allow update: if isAdmin(t)
-        && nuevo().owner == resource.data.owner
-        && nuevo().codigo == resource.data.codigo
-        && nuevo().get('plan', null) == resource.data.get('plan', null);
+      // El admin cambia su configuración y registra su último acceso; nada más.
+      allow update: if (isAdmin(t) && soloCambia(['config', 'nombre', 'ultimoAcceso']))
+        // El dueño de la plataforma maneja estado, prueba, plan y notas.
+        || (isSuper() && soloCambia(['estado', 'pruebaHasta', 'plan', 'notaPlataforma'])
+            && nuevo().get('estado', 'activa') in ['prueba', 'activa', 'suspendida']);
       allow delete: if false;
 
       match /planes/{id} {
@@ -73,7 +99,7 @@ service cloud.firestore {
       }
 
       match /cobradores/{id} {
-        allow read: if isAdmin(t) || isCob(t);
+        allow read: if isAdmin(t) || isCob(t) || isSuper();
         allow write: if isAdmin(t);
       }
 
@@ -85,7 +111,7 @@ service cloud.firestore {
       }
 
       match /prestamos/{id} {
-        allow read: if isAdmin(t)
+        allow read: if isSuper() || isAdmin(t)
           || (isCob(t) && resource.data.cobradorId == me().cobradorId)
           || (isCli(t) && resource.data.clienteId == me().clienteId);
         allow create: if isAdmin(t) && montoValido(nuevo().monto) && nuevo().clienteId is string && nuevo().cobradorId is string;
