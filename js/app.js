@@ -991,11 +991,11 @@ function bnav(){
 function cabecera(){
   const seg=$('#segRol'),listo=ME&&S&&S.config,opera=!listo||estadoEmpresa(S.tenant,DIAS_PRUEBA).opera;
   seg.hidden=!(listo&&esAdmin()&&opera&&UI.role!=='plataforma');
-  const bp=$('#btnPlat');bp.hidden=!(B&&B.esSuper);bp.setAttribute('aria-pressed',UI.role==='plataforma');bp.classList.toggle('pri',UI.role==='plataforma');
+  const bp=$('#btnPlat');bp.hidden=!(B&&B.esSuper&&(ME||B.demo));bp.setAttribute('aria-pressed',UI.role==='plataforma');bp.classList.toggle('pri',UI.role==='plataforma');
   seg.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===UI.role));
-  $('#empresa').textContent=listo?(S.config.empresa||'Cartera Diaria'):'Cartera Diaria';
-  $('#subtitulo').textContent=UI.role==='plataforma'?'Panel de plataforma':!listo?'Control de préstamos':B&&B.demo?'Modo demostración':`${ME.nombre||''} · ${{admin:'Oficina',cobrador:'Cobrador',cliente:'Cliente'}[ME.rol]}`;
-  $('#btnSalir').hidden=!(ME&&B&&!B.demo);
+  $('#empresa').textContent=listo&&UI.role!=='plataforma'?(S.config.empresa||'Cartera Diaria'):'Cartera Diaria';
+  $('#subtitulo').textContent=UI.role==='plataforma'?(ME?'Panel de plataforma':'Dueño de la plataforma'):!listo?'Control de préstamos':B&&B.demo?'Modo demostración':`${ME.nombre||''} · ${{admin:'Oficina',cobrador:'Cobrador',cliente:'Cliente'}[ME.rol]}`;
+  $('#btnSalir').hidden=!(B&&!B.demo&&AUTH&&AUTH.user);
   const red=$('#red');
   if(!navigator.onLine){red.hidden=false;red.className='chip c-warn';red.textContent='Sin conexión'+(RED.pendientes?` · ${RED.pendientes} por enviar`:'')}
   else if(RED.pendientes){red.hidden=false;red.className='chip c-pen';red.textContent=`${RED.pendientes} por enviar`}
